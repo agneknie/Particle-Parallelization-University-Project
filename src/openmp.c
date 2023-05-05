@@ -19,91 +19,46 @@ unsigned int openmp_pixel_contrib_count;
 CImage openmp_output_image;
 
 void openmp_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
-    // Based on https://www.tutorialspoint.com/explain-the-quick-sort-technique-in-c-language
-    int i, j, pivot;
-    float depth_t;
-    unsigned char color_t[4];
-    if (first < last) {
-        pivot = first;
-        i = first;
-        j = last;
-        while (i < j) {
-            while (keys_start[i] <= keys_start[pivot] && i < last)
-                i++;
-            while (keys_start[j] > keys_start[pivot])
-                j--;
-            if (i < j) {
-                // Swap key
-                depth_t = keys_start[i];
-                keys_start[i] = keys_start[j];
-                keys_start[j] = depth_t;
-                // Swap color
-                memcpy(color_t, colours_start + (4 * i), 4 * sizeof(unsigned char));
-                memcpy(colours_start + (4 * i), colours_start + (4 * j), 4 * sizeof(unsigned char));
-                memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
-            }
-        }
-        // Swap key
-        depth_t = keys_start[pivot];
-        keys_start[pivot] = keys_start[j];
-        keys_start[j] = depth_t;
-        // Swap color
-        memcpy(color_t, colours_start + (4 * pivot), 4 * sizeof(unsigned char));
-        memcpy(colours_start + (4 * pivot), colours_start + (4 * j), 4 * sizeof(unsigned char));
-        memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
+    // Calculate the size of the range to sort
+    const int size = last - first + 1;
 
-        // Recurse
+    // Sort the range using OpenMP's built-in sorting function
 #pragma omp parallel
+    {
+        // Copy the keys and colors to local arrays
+        float* local_keys = (float*)malloc(size * sizeof(float));
+        memcpy(local_keys, keys_start + first, size * sizeof(float));
+
+        unsigned char* local_colors = (unsigned char*)malloc(4 * size * sizeof(unsigned char));
+        memcpy(local_colors, colours_start + (4 * first), 4 * size * sizeof(unsigned char));
+
+        // Sort the local arrays
+#pragma omp single
         {
-#pragma omp sections
-            {
-#pragma omp section
-                openmp_sort_pairs(keys_start, colours_start, first, j - 1);
-#pragma omp section
-                openmp_sort_pairs(keys_start, colours_start, j + 1, last);
-            }
+            // NOT AVAILABLE IN OPENMP LOWER THAN 5.0
+            omp_sort(local_keys, local_keys + size);
         }
+
+        // Copy the sorted keys and colors back to the original arrays
+#pragma omp for
+        for (int i = 0; i < size; i++) {
+            int index = first + i;
+            keys_start[index] = local_keys[i];
+            memcpy(colours_start + (4 * index), local_colors + (4 * i), 4 * sizeof(unsigned char));
+        }
+
+        // Free the local arrays
+        free(local_keys);
+        free(local_colors);
     }
 }
+
 
 void regular_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
-    // Based on https://www.tutorialspoint.com/explain-the-quick-sort-technique-in-c-language
-    int i, j, pivot;
-    float depth_t;
-    unsigned char color_t[4];
-    if (first < last) {
-        pivot = first;
-        i = first;
-        j = last;
-        while (i < j) {
-            while (keys_start[i] <= keys_start[pivot] && i < last)
-                i++;
-            while (keys_start[j] > keys_start[pivot])
-                j--;
-            if (i < j) {
-                // Swap key
-                depth_t = keys_start[i];
-                keys_start[i] = keys_start[j];
-                keys_start[j] = depth_t;
-                // Swap color
-                memcpy(color_t, colours_start + (4 * i), 4 * sizeof(unsigned char));
-                memcpy(colours_start + (4 * i), colours_start + (4 * j), 4 * sizeof(unsigned char));
-                memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
-            }
-        }
-        // Swap key
-        depth_t = keys_start[pivot];
-        keys_start[pivot] = keys_start[j];
-        keys_start[j] = depth_t;
-        // Swap color
-        memcpy(color_t, colours_start + (4 * pivot), 4 * sizeof(unsigned char));
-        memcpy(colours_start + (4 * pivot), colours_start + (4 * j), 4 * sizeof(unsigned char));
-        memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
-        // Recurse
-        regular_sort_pairs(keys_start, colours_start, first, j - 1);
-        regular_sort_pairs(keys_start, colours_start, j + 1, last);
-    }
+    // Call OpenMP's built-in sorting function
+    openmp_sort_pairs(keys_start, colours_start, first, last);
 }
+
 
 
 void fake_stage1() {
@@ -361,7 +316,7 @@ void openmp_stage2() {
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         // Pair sort the colours which contribute to a single pigment
-        openmp_sort_pairs(
+        regular_sort_pairs(
             openmp_pixel_contrib_depth,
             openmp_pixel_contrib_colours,
             openmp_pixel_index[i],
