@@ -5,6 +5,7 @@
 #include <string.h>
 #include <omp.h>
 #include <math.h>
+#include <stdbool.h>
 
 ///
 /// Algorithm storage
@@ -17,49 +18,47 @@ unsigned char* openmp_pixel_contrib_colours;
 float* openmp_pixel_contrib_depth;
 unsigned int openmp_pixel_contrib_count;
 CImage openmp_output_image;
-
-void openmp_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
-    // Calculate the size of the range to sort
-    const int size = last - first + 1;
-
-    // Sort the range using OpenMP's built-in sorting function
-#pragma omp parallel
-    {
-        // Copy the keys and colors to local arrays
-        float* local_keys = (float*)malloc(size * sizeof(float));
-        memcpy(local_keys, keys_start + first, size * sizeof(float));
-
-        unsigned char* local_colors = (unsigned char*)malloc(4 * size * sizeof(unsigned char));
-        memcpy(local_colors, colours_start + (4 * first), 4 * size * sizeof(unsigned char));
-
-        // Sort the local arrays
-#pragma omp single
-        {
-            // NOT AVAILABLE IN OPENMP LOWER THAN 5.0
-            omp_sort(local_keys, local_keys + size);
-        }
-
-        // Copy the sorted keys and colors back to the original arrays
-#pragma omp for
-        for (int i = 0; i < size; i++) {
-            int index = first + i;
-            keys_start[index] = local_keys[i];
-            memcpy(colours_start + (4 * index), local_colors + (4 * i), 4 * sizeof(unsigned char));
-        }
-
-        // Free the local arrays
-        free(local_keys);
-        free(local_colors);
-    }
-}
-
+// Stage 2 Variables
+unsigned int* local_contribs;
 
 void regular_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
-    // Call OpenMP's built-in sorting function
-    openmp_sort_pairs(keys_start, colours_start, first, last);
+    // Based on https://www.tutorialspoint.com/explain-the-quick-sort-technique-in-c-language
+    int i, j, pivot;
+    float depth_t;
+    unsigned char color_t[4];
+    if (first < last) {
+        pivot = first;
+        i = first;
+        j = last;
+        while (i < j) {
+            while (keys_start[i] <= keys_start[pivot] && i < last)
+                i++;
+            while (keys_start[j] > keys_start[pivot])
+                j--;
+            if (i < j) {
+                // Swap key
+                depth_t = keys_start[i];
+                keys_start[i] = keys_start[j];
+                keys_start[j] = depth_t;
+                // Swap color
+                memcpy(color_t, colours_start + (4 * i), 4 * sizeof(unsigned char));
+                memcpy(colours_start + (4 * i), colours_start + (4 * j), 4 * sizeof(unsigned char));
+                memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
+            }
+        }
+        // Swap key
+        depth_t = keys_start[pivot];
+        keys_start[pivot] = keys_start[j];
+        keys_start[j] = depth_t;
+        // Swap color
+        memcpy(color_t, colours_start + (4 * pivot), 4 * sizeof(unsigned char));
+        memcpy(colours_start + (4 * pivot), colours_start + (4 * j), 4 * sizeof(unsigned char));
+        memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
+        // Recurse
+        regular_sort_pairs(keys_start, colours_start, first, j - 1);
+        regular_sort_pairs(keys_start, colours_start, j + 1, last);
+    }
 }
-
-
 
 void fake_stage1() {
     // Reset the pixel contributions histogram
@@ -206,6 +205,9 @@ void openmp_begin(const Particle* init_particles, const unsigned int init_partic
     openmp_output_image.height = (int)out_image_height;
     openmp_output_image.channels = 3;  // RGB
     openmp_output_image.data = (unsigned char*)malloc(openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
+
+    // Stage 2 variable allocations
+    local_contribs = malloc(sizeof(unsigned int) * (openmp_output_image.width * openmp_output_image.height + 1));
 }
 
 
@@ -264,6 +266,8 @@ void openmp_stage2() {
     for (int i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         openmp_pixel_index[i + 1] = openmp_pixel_index[i] + openmp_pixel_contribs[i];
     }
+
+
     // Recover the total from the index
     const unsigned int TOTAL_CONTRIBS = openmp_pixel_index[openmp_output_image.width * openmp_output_image.height];
     if (TOTAL_CONTRIBS > openmp_pixel_contrib_count) {
@@ -281,7 +285,10 @@ void openmp_stage2() {
 
     // Store colours according to index
     // For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
-    for (unsigned int i = 0; i < openmp_particles_count; ++i) {
+    int i;
+#pragma omp parallel for private(i)
+    for (i = 0; i < openmp_particles_count; ++i) {
+        memset(local_contribs, 0, sizeof(unsigned int) * openmp_output_image.width * openmp_output_image.height); // local contribs for each thread
         // Compute bounding box [inclusive-inclusive]
         int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
         int y_min = (int)roundf(openmp_particles[i].location[1] - openmp_particles[i].radius);
@@ -301,17 +308,29 @@ void openmp_stage2() {
                 if (pixel_distance <= openmp_particles[i].radius) {
                     const unsigned int pixel_offset = y * openmp_output_image.width + x;
                     // Offset into openmp_pixel_contrib buffers is index + histogram
-                    // Increment openmp_pixel_contribs, so next contributor stores to correct offset
-                    const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
+                    // Increment local_contribs, so next contributor stores to correct offset
+                    const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + local_contribs[pixel_offset]++;
                     // Copy data to openmp_pixel_contrib buffers
-                    memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
-                    memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
+#pragma omp critical
+                    {
+                        memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
+                        memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
+                    }
                 }
+            }
+        }
+        // Reduce local contributions into global contributions
+#pragma omp critical
+        {
+            for (unsigned int j = 0; j < openmp_output_image.width * openmp_output_image.height; ++j) {
+                openmp_pixel_contribs[j] += local_contribs[j];
             }
         }
     }
 
-    int i;
+
+
+    //int i;
 #pragma omp parallel for private (i)
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
