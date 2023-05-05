@@ -361,7 +361,7 @@ void openmp_stage2() {
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         // Pair sort the colours which contribute to a single pigment
-        regular_sort_pairs(
+        openmp_sort_pairs(
             openmp_pixel_contrib_depth,
             openmp_pixel_contrib_colours,
             openmp_pixel_index[i],
