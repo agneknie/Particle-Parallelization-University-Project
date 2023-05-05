@@ -357,6 +357,7 @@ void openmp_stage2() {
     }
 
     int i;
+#pragma omp parallel for private (i)
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         // Pair sort the colours which contribute to a single pigment
