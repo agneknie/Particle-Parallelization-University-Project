@@ -5,7 +5,6 @@
 #include <string.h>
 #include <omp.h>
 #include <math.h>
-#include <stdbool.h>
 
 ///
 /// Algorithm storage
@@ -18,8 +17,54 @@ unsigned char* openmp_pixel_contrib_colours;
 float* openmp_pixel_contrib_depth;
 unsigned int openmp_pixel_contrib_count;
 CImage openmp_output_image;
-// Stage 2 Variables
-unsigned int* local_contribs;
+
+void openmp_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
+    // Based on https://www.tutorialspoint.com/explain-the-quick-sort-technique-in-c-language
+    int i, j, pivot;
+    float depth_t;
+    unsigned char color_t[4];
+    if (first < last) {
+        pivot = first;
+        i = first;
+        j = last;
+        while (i < j) {
+            while (keys_start[i] <= keys_start[pivot] && i < last)
+                i++;
+            while (keys_start[j] > keys_start[pivot])
+                j--;
+            if (i < j) {
+                // Swap key
+                depth_t = keys_start[i];
+                keys_start[i] = keys_start[j];
+                keys_start[j] = depth_t;
+                // Swap color
+                memcpy(color_t, colours_start + (4 * i), 4 * sizeof(unsigned char));
+                memcpy(colours_start + (4 * i), colours_start + (4 * j), 4 * sizeof(unsigned char));
+                memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
+            }
+        }
+        // Swap key
+        depth_t = keys_start[pivot];
+        keys_start[pivot] = keys_start[j];
+        keys_start[j] = depth_t;
+        // Swap color
+        memcpy(color_t, colours_start + (4 * pivot), 4 * sizeof(unsigned char));
+        memcpy(colours_start + (4 * pivot), colours_start + (4 * j), 4 * sizeof(unsigned char));
+        memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
+
+        // Recurse
+#pragma omp parallel
+        {
+#pragma omp sections
+            {
+#pragma omp section
+                openmp_sort_pairs(keys_start, colours_start, first, j - 1);
+#pragma omp section
+                openmp_sort_pairs(keys_start, colours_start, j + 1, last);
+            }
+        }
+    }
+}
 
 void regular_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
     // Based on https://www.tutorialspoint.com/explain-the-quick-sort-technique-in-c-language
@@ -59,6 +104,7 @@ void regular_sort_pairs(float* keys_start, unsigned char* colours_start, const i
         regular_sort_pairs(keys_start, colours_start, j + 1, last);
     }
 }
+
 
 void fake_stage1() {
     // Reset the pixel contributions histogram
@@ -205,18 +251,15 @@ void openmp_begin(const Particle* init_particles, const unsigned int init_partic
     openmp_output_image.height = (int)out_image_height;
     openmp_output_image.channels = 3;  // RGB
     openmp_output_image.data = (unsigned char*)malloc(openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
-
-    // Stage 2 variable allocations
-    local_contribs = malloc(sizeof(unsigned int) * (openmp_output_image.width * openmp_output_image.height + 1));
 }
 
 
 
 void openmp_stage1() {
     // Optionally during development call the skip function with the correct inputs to skip this stage
-	// skip_pixel_contribs(openmp_particles, openmp_particles_count, openmp_pixel_contribs, openmp_output_image.width, openmp_output_image.height);
+    // skip_pixel_contribs(openmp_particles, openmp_particles_count, openmp_pixel_contribs, openmp_output_image.width, openmp_output_image.height);
 
-	// Reset the pixel contributions histogram
+    // Reset the pixel contributions histogram
     memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
 
     signed int i;
@@ -257,8 +300,8 @@ void openmp_stage1() {
 
 void openmp_stage2() {
     // Optionally during development call the skip function/s with the correct inputs to skip this stage
-	// skip_pixel_index(openmp_pixel_contribs, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height);
-	// skip_sorted_pairs(openmp_particles, openmp_particles_count, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height, openmp_pixel_contrib_colours, openmp_pixel_contrib_depth);
+    // skip_pixel_index(openmp_pixel_contribs, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height);
+    // skip_sorted_pairs(openmp_particles, openmp_particles_count, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height, openmp_pixel_contrib_colours, openmp_pixel_contrib_depth);
 
 
     // Exclusive prefix sum across the histogram to create an index
@@ -282,13 +325,12 @@ void openmp_stage2() {
     // Reset the pixel contributions histogram
     memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
 
-
+    signed int i;
+    // Parallelizing outer loop in a similar fashion as Stage 1
+#pragma omp parallel for private(i)
     // Store colours according to index
     // For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
-    int i;
-#pragma omp parallel for private(i)
     for (i = 0; i < openmp_particles_count; ++i) {
-        memset(local_contribs, 0, sizeof(unsigned int) * openmp_output_image.width * openmp_output_image.height); // local contribs for each thread
         // Compute bounding box [inclusive-inclusive]
         int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
         int y_min = (int)roundf(openmp_particles[i].location[1] - openmp_particles[i].radius);
@@ -307,28 +349,19 @@ void openmp_stage2() {
                 const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
                 if (pixel_distance <= openmp_particles[i].radius) {
                     const unsigned int pixel_offset = y * openmp_output_image.width + x;
-                    // Offset into openmp_pixel_contrib buffers is index + histogram
-                    // Increment local_contribs, so next contributor stores to correct offset
-                    const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + local_contribs[pixel_offset]++;
-                    // Copy data to openmp_pixel_contrib buffers
 #pragma omp critical
                     {
+                        // Offset into openmp_pixel_contrib buffers is index + histogram
+						// Increment openmp_pixel_contribs, so next contributor stores to correct offset
+                        const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
+                        // Copy data to openmp_pixel_contrib buffers
                         memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
                         memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
                     }
                 }
             }
         }
-        // Reduce local contributions into global contributions
-#pragma omp critical
-        {
-            for (unsigned int j = 0; j < openmp_output_image.width * openmp_output_image.height; ++j) {
-                openmp_pixel_contribs[j] += local_contribs[j];
-            }
-        }
     }
-
-
 
     //int i;
 #pragma omp parallel for private (i)
@@ -346,8 +379,8 @@ void openmp_stage2() {
 #ifdef VALIDATION
     // TODO: Uncomment and call the validation functions with the correct inputs
     // Note: Only validate_equalised_histogram() MUST be uncommented, the others are optional
-     validate_pixel_index(openmp_pixel_contribs, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height);
-     validate_sorted_pairs(openmp_particles, openmp_particles_count, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height, openmp_pixel_contrib_colours, openmp_pixel_contrib_depth);
+    validate_pixel_index(openmp_pixel_contribs, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height);
+    validate_sorted_pairs(openmp_particles, openmp_particles_count, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height, openmp_pixel_contrib_colours, openmp_pixel_contrib_depth);
 #endif    
 }
 
@@ -360,7 +393,7 @@ void openmp_stage3() {
 
 #ifdef VALIDATION
     // TODO: Uncomment and call the validation function with the correct inputs
-     validate_blend(openmp_pixel_index, openmp_pixel_contrib_colours, &openmp_output_image);
+    validate_blend(openmp_pixel_index, openmp_pixel_contrib_colours, &openmp_output_image);
 #endif    
 }
 
