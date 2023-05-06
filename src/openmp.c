@@ -325,8 +325,8 @@ void openmp_stage2() {
     // Reset the pixel contributions histogram
     memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
 
-// Store colours according to index
-// For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
+    // Store colours according to index
+    // For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
     for (int i = 0; i < openmp_particles_count; ++i) {
         // Compute bounding box [inclusive-inclusive]
         int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
@@ -387,7 +387,9 @@ void openmp_stage3() {
     memset(openmp_output_image.data, 255, openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
 
     // Order dependent blending into output image
-    for (int i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
+    int i;
+#pragma omp parallel for private (i)
+    for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
             // Get the color and opacity values
             const unsigned char* color = &openmp_pixel_contrib_colours[j * 4];
