@@ -352,10 +352,11 @@ void openmp_stage2() {
                         // Offset into openmp_pixel_contrib buffers is index + histogram
                         // Increment openmp_pixel_contribs, so next contributor stores to correct offset
                         const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
-#pragma omp critical
-                    {
+
                         // Copy data to openmp_pixel_contrib buffers
                         memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
+#pragma omp critical
+                    {
                         memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
                 	}
                 }
