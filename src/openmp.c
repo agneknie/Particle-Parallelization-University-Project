@@ -325,12 +325,9 @@ void openmp_stage2() {
     // Reset the pixel contributions histogram
     memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
 
-    signed int i;
-    // Parallelizing outer loop in a similar fashion as Stage 1
-#pragma omp parallel for private(i)
-    // Store colours according to index
-    // For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
-    for (i = 0; i < openmp_particles_count; ++i) {
+// Store colours according to index
+// For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
+    for (int i = 0; i < openmp_particles_count; ++i) {
         // Compute bounding box [inclusive-inclusive]
         int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
         int y_min = (int)roundf(openmp_particles[i].location[1] - openmp_particles[i].radius);
@@ -342,30 +339,29 @@ void openmp_stage2() {
         x_max = x_max >= openmp_output_image.width ? openmp_output_image.width - 1 : x_max;
         y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
         // Store data for every pixel within the bounding box that falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
+        int x;
+#pragma omp parallel for private(x)
+        for (x = x_min; x <= x_max; ++x) {
             for (int y = y_min; y <= y_max; ++y) {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
                 const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
                 const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-                if (pixel_distance <= openmp_particles[i].radius) {                	
-                        const unsigned int pixel_offset = y * openmp_output_image.width + x;
-                        // Offset into openmp_pixel_contrib buffers is index + histogram
-                        // Increment openmp_pixel_contribs, so next contributor stores to correct offset
-                        unsigned int contrib_offset;
-#pragma omp critical
-                        {
-                            contrib_offset = openmp_pixel_contribs[pixel_offset]++;
-                        }
-                        const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + contrib_offset;
-                        // Copy data to openmp_pixel_contrib buffers
-                        memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
-                        memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
+                if (pixel_distance <= openmp_particles[i].radius) {
+                    const unsigned int pixel_offset = y * openmp_output_image.width + x;
+                    // Offset into openmp_pixel_contrib buffers is index + histogram
+                    // Increment openmp_pixel_contribs, so next contributor stores to correct offset
+                    const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
+                    // Copy data to openmp_pixel_contrib buffers
+                    memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
+                    memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
                 }
             }
         }
     }
 
-    //int i;
+
+
+    int i;
 #pragma omp parallel for private (i)
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
