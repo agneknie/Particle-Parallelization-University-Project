@@ -386,7 +386,7 @@ void openmp_stage3() {
 
     // Order dependent blending into output image
     int i;
-#pragma omp parallel for private (i)
+#pragma omp parallel for collapse(2)
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
             // Get the color and opacity values
