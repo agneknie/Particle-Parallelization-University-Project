@@ -340,11 +340,9 @@ void openmp_stage2() {
         y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
         // Store data for every pixel within the bounding box that falls within the radius
         int x;
-
-        for (int x = x_min; x <= x_max; ++x) {
-            int y;
-#pragma omp parallel for private(y)
-            for (y = y_min; y <= y_max; ++y) {
+#pragma omp parallel for private(x)
+        for (x = x_min; x <= x_max; ++x) {
+            for (int y = y_min; y <= y_max; ++y) {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
                 const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
                 const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
@@ -360,8 +358,6 @@ void openmp_stage2() {
             }
         }
     }
-
-
 
     int i;
 #pragma omp parallel for private (i)
@@ -387,9 +383,34 @@ void openmp_stage2() {
 
 
 void openmp_stage3() {
-    // Optionally during development call the skip function with the correct inputs to skip this stage
-    // skip_blend(openmp_pixel_index, openmp_pixel_contrib_colours, &openmp_output_image);
-    fake_stage3();
+    // Memset output image data to 255 (white)
+    memset(openmp_output_image.data, 255, openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
+
+    // Order dependent blending into output image
+    for (int i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
+        for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
+            // Get the color and opacity values
+            const unsigned char* color = &openmp_pixel_contrib_colours[j * 4];
+            const float opacity = (float)color[3] / (float)255;
+
+            // Compute the blended color channels
+            const float src_r = (float)color[0] * opacity;
+            const float src_g = (float)color[1] * opacity;
+            const float src_b = (float)color[2] * opacity;
+            const float dest_r = (float)openmp_output_image.data[(i * 3) + 0];
+            const float dest_g = (float)openmp_output_image.data[(i * 3) + 1];
+            const float dest_b = (float)openmp_output_image.data[(i * 3) + 2];
+            const float blended_r = src_r + dest_r * (1 - opacity);
+            const float blended_g = src_g + dest_g * (1 - opacity);
+            const float blended_b = src_b + dest_b * (1 - opacity);
+
+            // Store the blended color channels in the output image
+            openmp_output_image.data[(i * 3) + 0] = (unsigned char)blended_r;
+            openmp_output_image.data[(i * 3) + 1] = (unsigned char)blended_g;
+            openmp_output_image.data[(i * 3) + 2] = (unsigned char)blended_b;
+        }
+    }
+
 
 #ifdef VALIDATION
     // TODO: Uncomment and call the validation function with the correct inputs
