@@ -347,17 +347,17 @@ void openmp_stage2() {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
                 const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
                 const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-                if (pixel_distance <= openmp_particles[i].radius) {
-                    const unsigned int pixel_offset = y * openmp_output_image.width + x;
+                if (pixel_distance <= openmp_particles[i].radius) {                	
+                        const unsigned int pixel_offset = y * openmp_output_image.width + x;
+                        // Offset into openmp_pixel_contrib buffers is index + histogram
+                        // Increment openmp_pixel_contribs, so next contributor stores to correct offset
+                        const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
 #pragma omp critical
                     {
-                        // Offset into openmp_pixel_contrib buffers is index + histogram
-						// Increment openmp_pixel_contribs, so next contributor stores to correct offset
-                        const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
                         // Copy data to openmp_pixel_contrib buffers
                         memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
                         memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
-                    }
+                	}
                 }
             }
         }
