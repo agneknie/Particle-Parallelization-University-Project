@@ -397,9 +397,9 @@ void openmp_stage3() {
             const float src_r = (float)color[0] * opacity;
             const float src_g = (float)color[1] * opacity;
             const float src_b = (float)color[2] * opacity;
-            const float dest_r = (float)openmp_output_image.data[(i * 3) + 0];
-            const float dest_g = (float)openmp_output_image.data[(i * 3) + 1];
-            const float dest_b = (float)openmp_output_image.data[(i * 3) + 2];
+            const float dest_r = openmp_output_image.data[(i * 3) + 0];
+            const float dest_g = openmp_output_image.data[(i * 3) + 1];
+            const float dest_b = openmp_output_image.data[(i * 3) + 2];
             const float blended_r = src_r + dest_r * (1 - opacity);
             const float blended_g = src_g + dest_g * (1 - opacity);
             const float blended_b = src_b + dest_b * (1 - opacity);
