@@ -268,7 +268,9 @@ void openmp_stage3() {
     int i;
 #pragma omp parallel for private (i)
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
-        for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
+        int j;
+#pragma omp parallel for private (j)
+        for (j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
             // Get the color and opacity values
             const unsigned char* color = &openmp_pixel_contrib_colours[j * 4];
             const float opacity = (float)color[3] / (float)255;
