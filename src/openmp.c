@@ -139,7 +139,7 @@ void openmp_stage1() {
     memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
 
     signed int i;
-#pragma omp parallel for private(i)
+#pragma omp parallel for private(i) collapse (2)
     for (i = 0; i < openmp_particles_count; ++i) {
         // Compute bounding box [inclusive-inclusive]
         int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
@@ -152,10 +152,8 @@ void openmp_stage1() {
         x_max = x_max >= openmp_output_image.width ? openmp_output_image.width - 1 : x_max;
         y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
         // For each pixel in the bounding box, check that it falls within the radius
-        int x, y;
-#pragma omp parallel for private (x, y) collapse(2)
-        for (x = x_min; x <= x_max; ++x) {
-            for (y = y_min; y <= y_max; ++y) {
+        for (int x = x_min; x <= x_max; ++x) {
+            for (int y = y_min; y <= y_max; ++y) {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
                 const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
                 const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
