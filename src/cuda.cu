@@ -27,7 +27,7 @@ int cuda_output_image_height;
 // Device storage of the output image dimensions
 __constant__ int D_OUTPUT_IMAGE_WIDTH;
 __constant__ int D_OUTPUT_IMAGE_HEIGHT;
-// Pointer to device image data buffer, for storing the output image data, this must be passed to a kernel to be used on device// Pointer to device image data buffer, for storing the output image data, this must be passed to a kernel to be used on device
+// Pointer to device image data buffer, for storing the output image data, this must be passed to a kernel to be used on device
 unsigned char* d_output_image_data;
 
 void cuda_begin(const Particle* init_particles, const unsigned int init_particles_count,
@@ -35,7 +35,7 @@ void cuda_begin(const Particle* init_particles, const unsigned int init_particle
     // These are basic CUDA memory allocations that match the CPU implementation
     // Depending on your optimisation, you may wish to rewrite these (and update cuda_end())
 
-    // Allocate a opy of the initial particles, to be used during computation
+    // Allocate a copy of the initial particles, to be used during computation
     cuda_particles_count = init_particles_count;
     CUDA_CALL(cudaMalloc(&d_particles, init_particles_count * sizeof(Particle)));
     CUDA_CALL(cudaMemcpy(d_particles, init_particles, init_particles_count * sizeof(Particle), cudaMemcpyHostToDevice));
@@ -68,7 +68,7 @@ void cuda_stage1() {
     // TODO: Uncomment and call the validation function with the correct inputs
     // You will need to copy the data back to host before passing to these functions
     // (Ensure that data copy is carried out within the ifdef VALIDATION so that it doesn't affect your benchmark results!)
-    // validate_pixel_contribs(particles, particles_count, pixel_contribs, out_image_width, out_image_height);
+     validate_pixel_contribs(d_particles, cuda_particles_count, d_pixel_contribs, cuda_output_image_width, cuda_output_image_height);
 #endif
 }
 void cuda_stage2() {
@@ -82,8 +82,8 @@ void cuda_stage2() {
     // Note: Only validate_equalised_histogram() MUST be uncommented, the others are optional
     // You will need to copy the data back to host before passing to these functions
     // (Ensure that data copy is carried out within the ifdef VALIDATION so that it doesn't affect your benchmark results!)
-    // validate_pixel_index(pixel_contribs, pixel_index, output_image_width, cpu_output_image_height);
-    // validate_sorted_pairs(particles, particles_count, pixel_index, output_image_width, cpu_output_image_height, pixel_contrib_colours, pixel_contrib_depth);
+     validate_pixel_index(d_pixel_contribs, d_pixel_index, cuda_output_image_width, cuda_output_image_height);
+     validate_sorted_pairs(d_particles, cuda_particles_count, d_pixel_index, cuda_output_image_width, cuda_output_image_height, d_pixel_contrib_colours, d_pixel_contrib_depth);
 #endif    
 }
 void cuda_stage3() {
@@ -95,7 +95,7 @@ void cuda_stage3() {
     // TODO: Uncomment and call the validation function with the correct inputs
     // You will need to copy the data back to host before passing to these functions
     // (Ensure that data copy is carried out within the ifdef VALIDATION so that it doesn't affect your benchmark results!)
-    // validate_blend(pixel_index, pixel_contrib_colours, &output_image);
+    // validate_blend(d_pixel_index, d_pixel_contrib_colours, &d_output_image_data);
 #endif    
 }
 void cuda_end(CImage *output_image) {
