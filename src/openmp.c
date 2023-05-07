@@ -105,128 +105,6 @@ void regular_sort_pairs(float* keys_start, unsigned char* colours_start, const i
     }
 }
 
-
-void fake_stage1() {
-    // Reset the pixel contributions histogram
-    memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
-    // Update each particle & calculate how many particles contribute to each image
-    for (unsigned int i = 0; i < openmp_particles_count; ++i) {
-        // Compute bounding box [inclusive-inclusive]
-        int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
-        int y_min = (int)roundf(openmp_particles[i].location[1] - openmp_particles[i].radius);
-        int x_max = (int)roundf(openmp_particles[i].location[0] + openmp_particles[i].radius);
-        int y_max = (int)roundf(openmp_particles[i].location[1] + openmp_particles[i].radius);
-        // Clamp bounding box to image bounds
-        x_min = x_min < 0 ? 0 : x_min;
-        y_min = y_min < 0 ? 0 : y_min;
-        x_max = x_max >= openmp_output_image.width ? openmp_output_image.width - 1 : x_max;
-        y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
-        // For each pixel in the bounding box, check that it falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
-            for (int y = y_min; y <= y_max; ++y) {
-                const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
-                const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
-                const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-                if (pixel_distance <= openmp_particles[i].radius) {
-                    const unsigned int pixel_offset = y * openmp_output_image.width + x;
-                    ++openmp_pixel_contribs[pixel_offset];
-                }
-            }
-        }
-    }
-#ifdef VALIDATION
-    validate_pixel_contribs(openmp_particles, openmp_particles_count, openmp_pixel_contribs, openmp_output_image.width, openmp_output_image.height);
-#endif
-}
-void fake_stage2() {
-    // Exclusive prefix sum across the histogram to create an index
-    openmp_pixel_index[0] = 0;
-    for (int i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
-        openmp_pixel_index[i + 1] = openmp_pixel_index[i] + openmp_pixel_contribs[i];
-    }
-    // Recover the total from the index
-    const unsigned int TOTAL_CONTRIBS = openmp_pixel_index[openmp_output_image.width * openmp_output_image.height];
-    if (TOTAL_CONTRIBS > openmp_pixel_contrib_count) {
-        // (Re)Allocate colour storage
-        if (openmp_pixel_contrib_colours) free(openmp_pixel_contrib_colours);
-        if (openmp_pixel_contrib_depth) free(openmp_pixel_contrib_depth);
-        openmp_pixel_contrib_colours = (unsigned char*)malloc(TOTAL_CONTRIBS * 4 * sizeof(unsigned char));
-        openmp_pixel_contrib_depth = (float*)malloc(TOTAL_CONTRIBS * sizeof(float));
-        openmp_pixel_contrib_count = TOTAL_CONTRIBS;
-    }
-
-    // Reset the pixel contributions histogram
-    memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
-    // Store colours according to index
-    // For each particle, store a copy of the colour/depth in openmp_pixel_contribs for each contributed pixel
-    for (unsigned int i = 0; i < openmp_particles_count; ++i) {
-        // Compute bounding box [inclusive-inclusive]
-        int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
-        int y_min = (int)roundf(openmp_particles[i].location[1] - openmp_particles[i].radius);
-        int x_max = (int)roundf(openmp_particles[i].location[0] + openmp_particles[i].radius);
-        int y_max = (int)roundf(openmp_particles[i].location[1] + openmp_particles[i].radius);
-        // Clamp bounding box to image bounds
-        x_min = x_min < 0 ? 0 : x_min;
-        y_min = y_min < 0 ? 0 : y_min;
-        x_max = x_max >= openmp_output_image.width ? openmp_output_image.width - 1 : x_max;
-        y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
-        // Store data for every pixel within the bounding box that falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
-            for (int y = y_min; y <= y_max; ++y) {
-                const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
-                const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
-                const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-                if (pixel_distance <= openmp_particles[i].radius) {
-                    const unsigned int pixel_offset = y * openmp_output_image.width + x;
-                    // Offset into openmp_pixel_contrib buffers is index + histogram
-                    // Increment openmp_pixel_contribs, so next contributor stores to correct offset
-                    const unsigned int storage_offset = openmp_pixel_index[pixel_offset] + (openmp_pixel_contribs[pixel_offset]++);
-                    // Copy data to openmp_pixel_contrib buffers
-                    memcpy(openmp_pixel_contrib_colours + (4 * storage_offset), openmp_particles[i].color, 4 * sizeof(unsigned char));
-                    memcpy(openmp_pixel_contrib_depth + storage_offset, &openmp_particles[i].location[2], sizeof(float));
-                }
-            }
-        }
-    }
-
-    // Pair sort the colours contributing to each pixel based on ascending depth
-    for (int i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
-        // Pair sort the colours which contribute to a single pigment
-        regular_sort_pairs(
-            openmp_pixel_contrib_depth,
-            openmp_pixel_contrib_colours,
-            openmp_pixel_index[i],
-            openmp_pixel_index[i + 1] - 1
-        );
-    }
-#ifdef VALIDATION
-    validate_pixel_index(openmp_pixel_contribs, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height);
-    validate_sorted_pairs(openmp_particles, openmp_particles_count, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height,
-        openmp_pixel_contrib_colours, openmp_pixel_contrib_depth);
-#endif
-}
-void fake_stage3() {
-    // Memset output image data to 255 (white)
-    memset(openmp_output_image.data, 255, openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
-
-    // Order dependent blending into output image
-    for (int i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
-        for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
-            // Blend each of the red/green/blue colours according to the below blend formula
-            // dest = src * opacity + dest * (1 - opacity);
-            const float opacity = (float)openmp_pixel_contrib_colours[j * 4 + 3] / (float)255;
-            openmp_output_image.data[(i * 3) + 0] = (unsigned char)((float)openmp_pixel_contrib_colours[j * 4 + 0] * opacity + (float)openmp_output_image.data[(i * 3) + 0] * (1 - opacity));
-            openmp_output_image.data[(i * 3) + 1] = (unsigned char)((float)openmp_pixel_contrib_colours[j * 4 + 1] * opacity + (float)openmp_output_image.data[(i * 3) + 1] * (1 - opacity));
-            openmp_output_image.data[(i * 3) + 2] = (unsigned char)((float)openmp_pixel_contrib_colours[j * 4 + 2] * opacity + (float)openmp_output_image.data[(i * 3) + 2] * (1 - opacity));
-            // openmp_pixel_contrib_colours is RGBA
-            // openmp_output_image.data is RGB (final output image does not have an alpha channel!)
-        }
-    }
-#ifdef VALIDATION
-    validate_blend(openmp_pixel_index, openmp_pixel_contrib_colours, &openmp_output_image);
-#endif
-}
-
 void openmp_begin(const Particle* init_particles, const unsigned int init_particles_count,
     const unsigned int out_image_width, const unsigned int out_image_height) {
 
@@ -339,7 +217,9 @@ void openmp_stage2() {
         x_max = x_max >= openmp_output_image.width ? openmp_output_image.width - 1 : x_max;
         y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
         // Store data for every pixel within the bounding box that falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
+        int x;
+#pragma omp parallel for private (x)
+        for (x = x_min; x <= x_max; ++x) {
             for (int y = y_min; y <= y_max; ++y) {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
                 const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
@@ -386,7 +266,7 @@ void openmp_stage3() {
 
     // Order dependent blending into output image
     int i;
-#pragma omp parallel for private (i)    // Parallelize the outer loop
+#pragma omp parallel for private (i)
     // Order dependent blending into output image
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
