@@ -131,8 +131,6 @@ void openmp_begin(const Particle* init_particles, const unsigned int init_partic
     openmp_output_image.data = (unsigned char*)malloc(openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
 }
 
-
-
 void openmp_stage1() {
     // Optionally during development call the skip function with the correct inputs to skip this stage
     // skip_pixel_contribs(openmp_particles, openmp_particles_count, openmp_pixel_contribs, openmp_output_image.width, openmp_output_image.height);
@@ -141,7 +139,7 @@ void openmp_stage1() {
     memset(openmp_pixel_contribs, 0, openmp_output_image.width * openmp_output_image.height * sizeof(unsigned int));
 
     signed int i;
-#pragma omp parallel for private(i)
+#pragma omp parallel for private(i) collapse (2)
     for (i = 0; i < openmp_particles_count; ++i) {
         // Compute bounding box [inclusive-inclusive]
         int x_min = (int)roundf(openmp_particles[i].location[0] - openmp_particles[i].radius);
@@ -173,8 +171,6 @@ void openmp_stage1() {
     validate_pixel_contribs(openmp_particles, openmp_particles_count, openmp_pixel_contribs, openmp_output_image.width, openmp_output_image.height);
 #endif
 }
-
-
 
 void openmp_stage2() {
     // Optionally during development call the skip function/s with the correct inputs to skip this stage
@@ -258,8 +254,6 @@ void openmp_stage2() {
 #endif    
 }
 
-
-
 void openmp_stage3() {
     // Memset output image data to 255 (white)
     memset(openmp_output_image.data, 255, openmp_output_image.width * openmp_output_image.height * openmp_output_image.channels * sizeof(unsigned char));
@@ -268,9 +262,7 @@ void openmp_stage3() {
     int i;
 #pragma omp parallel for private (i)
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
-        int j;
-#pragma omp parallel for private (j)
-        for (j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
+        for (int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
             // Get the color and opacity values
             const unsigned char* color = &openmp_pixel_contrib_colours[j * 4];
             const float opacity = (float)color[3] / (float)255;
@@ -299,8 +291,6 @@ void openmp_stage3() {
     validate_blend(openmp_pixel_index, openmp_pixel_contrib_colours, &openmp_output_image);
 #endif    
 }
-
-
 
 void openmp_end(CImage* output_image) {
     // Store return value
