@@ -214,7 +214,7 @@ void openmp_stage2() {
         y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
         // Store data for every pixel within the bounding box that falls within the radius
         int x;
-#pragma omp parallel for private(x)
+#pragma omp parallel for private(x) collapse (2)
         for (x = x_min; x <= x_max; ++x) {
             for (int y = y_min; y <= y_max; ++y) {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
