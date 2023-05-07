@@ -339,7 +339,9 @@ void openmp_stage2() {
         x_max = x_max >= openmp_output_image.width ? openmp_output_image.width - 1 : x_max;
         y_max = y_max >= openmp_output_image.height ? openmp_output_image.height - 1 : y_max;
         // Store data for every pixel within the bounding box that falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
+        int x;
+#pragma omp parallel for private(x)
+        for (x = x_min; x <= x_max; ++x) {
             for (int y = y_min; y <= y_max; ++y) {
                 const float x_ab = (float)x + 0.5f - openmp_particles[i].location[0];
                 const float y_ab = (float)y + 0.5f - openmp_particles[i].location[1];
@@ -386,28 +388,18 @@ void openmp_stage3() {
 
     // Order dependent blending into output image
     int i;
-#pragma omp parallel for collapse(2)
+#pragma omp parallel for private (i)
+    // Order dependent blending into output image
     for (i = 0; i < openmp_output_image.width * openmp_output_image.height; ++i) {
         for (unsigned int j = openmp_pixel_index[i]; j < openmp_pixel_index[i + 1]; ++j) {
-            // Get the color and opacity values
-            const unsigned char* color = &openmp_pixel_contrib_colours[j * 4];
-            const float opacity = (float)color[3] / (float)255;
-
-            // Compute the blended color channels
-            const float src_r = (float)color[0] * opacity;
-            const float src_g = (float)color[1] * opacity;
-            const float src_b = (float)color[2] * opacity;
-            const float dest_r = openmp_output_image.data[(i * 3) + 0];
-            const float dest_g = openmp_output_image.data[(i * 3) + 1];
-            const float dest_b = openmp_output_image.data[(i * 3) + 2];
-            const float blended_r = src_r + dest_r * (1 - opacity);
-            const float blended_g = src_g + dest_g * (1 - opacity);
-            const float blended_b = src_b + dest_b * (1 - opacity);
-
-            // Store the blended color channels in the output image
-            openmp_output_image.data[(i * 3) + 0] = (unsigned char)blended_r;
-            openmp_output_image.data[(i * 3) + 1] = (unsigned char)blended_g;
-            openmp_output_image.data[(i * 3) + 2] = (unsigned char)blended_b;
+            // Blend each of the red/green/blue colours according to the below blend formula
+            // dest = src * opacity + dest * (1 - opacity);
+            const float opacity = (float)openmp_pixel_contrib_colours[j * 4 + 3] / (float)255;
+            openmp_output_image.data[(i * 3) + 0] = (unsigned char)((float)openmp_pixel_contrib_colours[j * 4 + 0] * opacity + (float)openmp_output_image.data[(i * 3) + 0] * (1 - opacity));
+            openmp_output_image.data[(i * 3) + 1] = (unsigned char)((float)openmp_pixel_contrib_colours[j * 4 + 1] * opacity + (float)openmp_output_image.data[(i * 3) + 1] * (1 - opacity));
+            openmp_output_image.data[(i * 3) + 2] = (unsigned char)((float)openmp_pixel_contrib_colours[j * 4 + 2] * opacity + (float)openmp_output_image.data[(i * 3) + 2] * (1 - opacity));
+            // openmp_pixel_contrib_colours is RGBA
+            // openmp_output_image.data is RGB (final output image does not have an alpha channel!)
         }
     }
 
