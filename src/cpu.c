@@ -91,9 +91,6 @@ void cpu_stage1() {
     validate_pixel_contribs(cpu_particles, cpu_particles_count, cpu_pixel_contribs, cpu_output_image.width, cpu_output_image.height);
 #endif
 }
-
-
-
 void cpu_stage2() {
     // Exclusive prefix sum across the histogram to create an index
     cpu_pixel_index[0] = 0;
