@@ -28,7 +28,7 @@ int cuda_output_image_height;                               // Host storage of t
 __device__ Particle* d_particles;                           // Device pointer to a list of particles
 __device__ unsigned int* d_pixel_contribs;                  // Device pointer to a histogram of the number of particles contributing to each pixel
 __device__ unsigned int* d_pixel_index;                     // Device pointer to an index of unique offsets for each pixels contributing colours
-__device__ unsigned char* d_pixel_contrib_colours;         // Device pointer to storage for each pixels contributing colours
+__device__ unsigned char* d_pixel_contrib_colours;          // Device pointer to storage for each pixels contributing colours
 __device__ float* d_pixel_contrib_depth;                    // Device pointer to storage for each pixels contributing colours' depth
 __device__ unsigned char* d_output_image_data;              // Pointer to device image data buffer, for storing the output image data, this must be passed to a kernel to be used on device
 
@@ -252,7 +252,7 @@ void cuda_stage2() {
     dim3 blocksPerGrid((int)ceil((float)cuda_particles_count / threadsPerBlock.x));
 
     // Launch the CUDA kernel
-    stage2_outer_loop_paralelized <<<blocksPerGrid, threadsPerBlock>>> (d_pixel_contrib_depth, d_pixel_contrib_colours, d_pixel_index, d_particles);
+    ///stage2_outer_loop_paralelized <<<blocksPerGrid, threadsPerBlock>>> (d_pixel_contrib_depth, d_pixel_contrib_colours, d_pixel_index, d_particles);
 
     cudaDeviceSynchronize();
 
