@@ -6,7 +6,6 @@
 #include <cmath>
 #include <device_launch_parameters.h>
 #include <windows.h>
-#include <windows.h>
 
 ///
 /// Host Variables
@@ -38,7 +37,10 @@ __constant__ int D_OUTPUT_IMAGE_HEIGHT;                     // Device storage of
 __constant__ unsigned int D_PARTICLES_COUNT;                // Number of particles in d_particles
 
 
-void cuda_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
+///
+/// Provided sorting algorithm.
+///
+void regular_sort_pairs(float* keys_start, unsigned char* colours_start, const int first, const int last) {
     // Based on https://www.tutorialspoint.com/explain-the-quick-sort-technique-in-c-language
     int i, j, pivot;
     float depth_t;
@@ -72,42 +74,18 @@ void cuda_sort_pairs(float* keys_start, unsigned char* colours_start, const int 
         memcpy(colours_start + (4 * pivot), colours_start + (4 * j), 4 * sizeof(unsigned char));
         memcpy(colours_start + (4 * j), color_t, 4 * sizeof(unsigned char));
         // Recurse
-        cuda_sort_pairs(keys_start, colours_start, first, j - 1);
-        cuda_sort_pairs(keys_start, colours_start, j + 1, last);
+        regular_sort_pairs(keys_start, colours_start, first, j - 1);
+        regular_sort_pairs(keys_start, colours_start, j + 1, last);
     }
 }
 
-__global__ void cuda_stage1_outer_parallel(Particle* particles, unsigned int* pixel_contribs) {
-    // Compute the index for the current thread
-    int index = threadIdx.x + blockIdx.x * blockDim.x;
-
-    if (index < D_PARTICLES_COUNT)
-    {
-        // Compute bounding box [inclusive-inclusive]
-        int x_min = (int)roundf(particles[index].location[0] - particles[index].radius);
-        int y_min = (int)roundf(particles[index].location[1] - particles[index].radius);
-        int x_max = (int)roundf(particles[index].location[0] + particles[index].radius);
-        int y_max = (int)roundf(particles[index].location[1] + particles[index].radius);
-        // Clamp bounding box to image bounds
-        x_min = x_min < 0 ? 0 : x_min;
-        y_min = y_min < 0 ? 0 : y_min;
-        x_max = x_max >= D_OUTPUT_IMAGE_WIDTH ? D_OUTPUT_IMAGE_WIDTH - 1 : x_max;
-        y_max = y_max >= D_OUTPUT_IMAGE_HEIGHT ? D_OUTPUT_IMAGE_HEIGHT - 1 : y_max;
-        // For each pixel in the bounding box, check that it falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
-            for (int y = y_min; y <= y_max; ++y) {
-                const float x_ab = (float)x + 0.5f - particles[index].location[0];
-                const float y_ab = (float)y + 0.5f - particles[index].location[1];
-                const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-                if (pixel_distance <= particles[index].radius) {
-                    const unsigned int pixel_offset = y * D_OUTPUT_IMAGE_WIDTH + x;
-                    atomicAdd(&pixel_contribs[pixel_offset], 1);
-                }
-            }
-        }
-    }
-}
-__global__ void cuda_stage1_outer_parallel_inner_two_collapsed(Particle* particles, unsigned int* pixel_contribs) {
+///
+/// CUDA Stage 1 Implementation (1/2)
+/// Outer loop is parallelized via a kernel.
+/// Inner loops are unrolled and collapsed.
+/// Provides the best performance out of two implemented approaches. Used in cuda_stage1.
+///
+__global__ void cuda_stage1_outer_parallel_inner_unrolled(Particle* particles, unsigned int* pixel_contribs) {
     // Compute the index for the current thread
     int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -140,36 +118,48 @@ __global__ void cuda_stage1_outer_parallel_inner_two_collapsed(Particle* particl
         }
     }
 }
-__global__ void cuda_stage2_store_colours_second_parallel_attempt(
-    Particle* particles, unsigned int* pixel_index, unsigned char* pixel_contrib_colours, float* pixel_contrib_depth, unsigned int* pixel_contribs,
-    int x_min, int y_min, int x_max, int y_max, int particle_index)
-{
-    // Calculate the pixel offset in the 2D grid
-    unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Ensure the thread operates within the image bounds and the first loop bounds
-    if (x >= x_min && x <= x_max && x < D_OUTPUT_IMAGE_WIDTH)
+
+///
+/// CUDA Stage 1 Implementation (2/2)
+/// Outer loop is parallelized via a kernel.
+///
+__global__ void cuda_stage1_outer_parallel(Particle* particles, unsigned int* pixel_contribs) {
+    // Compute the index for the current thread
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (index < D_PARTICLES_COUNT)
     {
-        for (int y = y_min; y <= y_max; ++y)
-        {
-            const float x_ab = (float)x + 0.5f - particles[blockIdx.y].location[0];
-            const float y_ab = (float)y + 0.5f - particles[blockIdx.y].location[1];
-            const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-
-            if (pixel_distance <= particles[blockIdx.y].radius)
-            {
-                const unsigned int pixel_offset = y * D_OUTPUT_IMAGE_WIDTH + x;
-                const unsigned int storage_offset = pixel_index[pixel_offset] + (pixel_contribs[pixel_offset]++);
-
-                for (int c = 0; c < 4; ++c)
-                {
-                    pixel_contrib_colours[4 * storage_offset + c] = particles[blockIdx.y].color[c];
+        // Compute bounding box [inclusive-inclusive]
+        int x_min = (int)roundf(particles[index].location[0] - particles[index].radius);
+        int y_min = (int)roundf(particles[index].location[1] - particles[index].radius);
+        int x_max = (int)roundf(particles[index].location[0] + particles[index].radius);
+        int y_max = (int)roundf(particles[index].location[1] + particles[index].radius);
+        // Clamp bounding box to image bounds
+        x_min = x_min < 0 ? 0 : x_min;
+        y_min = y_min < 0 ? 0 : y_min;
+        x_max = x_max >= D_OUTPUT_IMAGE_WIDTH ? D_OUTPUT_IMAGE_WIDTH - 1 : x_max;
+        y_max = y_max >= D_OUTPUT_IMAGE_HEIGHT ? D_OUTPUT_IMAGE_HEIGHT - 1 : y_max;
+        // For each pixel in the bounding box, check that it falls within the radius
+        for (int x = x_min; x <= x_max; ++x) {
+            for (int y = y_min; y <= y_max; ++y) {
+                const float x_ab = (float)x + 0.5f - particles[index].location[0];
+                const float y_ab = (float)y + 0.5f - particles[index].location[1];
+                const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
+                if (pixel_distance <= particles[index].radius) {
+                    const unsigned int pixel_offset = y * D_OUTPUT_IMAGE_WIDTH + x;
+                    atomicAdd(&pixel_contribs[pixel_offset], 1);
                 }
-                pixel_contrib_depth[storage_offset] = particles[blockIdx.y].location[2];
             }
         }
     }
 }
+
+///
+/// CUDA Stage 3 Implementation (1/2)
+/// Outer loop is parallelized via a kernel.
+/// Inner loop is optimized by rearranging operations to improve cache locality
+/// Provides the best performance out of two implemented approaches. Used in cuda_stage3.
+///
 __global__ void cuda_stage3_order_rearranged_outer_parallel(unsigned int* pixel_index, unsigned char* pixel_contrib_colours, unsigned char* output_image_data)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -198,7 +188,28 @@ __global__ void cuda_stage3_order_rearranged_outer_parallel(unsigned int* pixel_
     }
 }
 
+///
+/// CUDA Stage 3 Implementation (2/2)
+/// Outer loop is parallelized via a kernel.
+///
+__global__ void cuda_stage3_outer_parallel(unsigned int* pixel_index, unsigned char* pixel_contrib_colours, unsigned char* output_image_data)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < D_OUTPUT_IMAGE_WIDTH * D_OUTPUT_IMAGE_HEIGHT) {
+        for (unsigned int j = pixel_index[index]; j < pixel_index[index + 1]; ++j) {
+            const float opacity = (float)pixel_contrib_colours[j * 4 + 3] / (float)255;
+            output_image_data[(index * 3) + 0] = (unsigned char)((float)pixel_contrib_colours[j * 4 + 0] * opacity + (float)output_image_data[(index * 3) + 0] * (1 - opacity));
+            output_image_data[(index * 3) + 1] = (unsigned char)((float)pixel_contrib_colours[j * 4 + 1] * opacity + (float)output_image_data[(index * 3) + 1] * (1 - opacity));
+            output_image_data[(index * 3) + 2] = (unsigned char)((float)pixel_contrib_colours[j * 4 + 2] * opacity + (float)output_image_data[(index * 3) + 2] * (1 - opacity));
+        }
+    }
+}
+
 void serial_stage2() {
+    // TODO: Delete if Stage 2 Changes.
+	// Copying to host memory, as Stage 2 does not use CUDA
+    CUDA_CALL(cudaMemcpy(cuda_pixel_contribs, d_pixel_contribs, cuda_output_image_width * cuda_output_image_height * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+
     // Exclusive prefix sum across the histogram to create an index
     cuda_pixel_index[0] = 0;
     for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
@@ -267,7 +278,7 @@ void serial_stage2() {
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
         // Pair sort the colours which contribute to a single pigment
-        cuda_sort_pairs(
+        regular_sort_pairs(
             cuda_pixel_contrib_depth,
             cuda_pixel_contrib_colours,
             cuda_pixel_index[i],
@@ -275,26 +286,10 @@ void serial_stage2() {
         );
     }
 
+    // TODO: Delete if Stage 2 Changes
+    // Copies to device memory, as it is used by Stage 3
     CUDA_CALL(cudaMemcpy(d_pixel_index, cuda_pixel_index, (cuda_output_image_width * cuda_output_image_width + 1) * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CUDA_CALL(cudaMemcpy(d_pixel_contrib_colours, cuda_pixel_contrib_colours, cuda_pixel_contrib_count * 4 * sizeof(unsigned char), cudaMemcpyHostToDevice));
-}
-void fake_stage3() {
-    // Memset output image data to 255 (white)
-    memset(cuda_output_image.data, 255, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char));
-
-    // Order dependent blending into output image
-    for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
-        for (unsigned int j = cuda_pixel_index[i]; j < cuda_pixel_index[i + 1]; ++j) {
-            // Blend each of the red/green/blue colours according to the below blend formula
-            // dest = src * opacity + dest * (1 - opacity);
-            const float opacity = (float)cuda_pixel_contrib_colours[j * 4 + 3] / (float)255;
-            cuda_output_image.data[(i * 3) + 0] = (unsigned char)((float)cuda_pixel_contrib_colours[j * 4 + 0] * opacity + (float)cuda_output_image.data[(i * 3) + 0] * (1 - opacity));
-            cuda_output_image.data[(i * 3) + 1] = (unsigned char)((float)cuda_pixel_contrib_colours[j * 4 + 1] * opacity + (float)cuda_output_image.data[(i * 3) + 1] * (1 - opacity));
-            cuda_output_image.data[(i * 3) + 2] = (unsigned char)((float)cuda_pixel_contrib_colours[j * 4 + 2] * opacity + (float)cuda_output_image.data[(i * 3) + 2] * (1 - opacity));
-            // cuda_pixel_contrib_colours is RGBA
-            // cuda_output_image.data is RGB (final output image does not have an alpha channel!)
-        }
-    }
 }
 
 void cuda_begin(const Particle* init_particles, const unsigned int init_particles_count,
@@ -338,27 +333,60 @@ void cuda_begin(const Particle* init_particles, const unsigned int init_particle
     CUDA_CALL(cudaMalloc(&d_output_image_data, cuda_output_image_width * cuda_output_image_height * 3 * sizeof(unsigned char)));
 }
 
+///
+/// Default Functions.
+///
 void cuda_stage1() {
-    
     // Reset the pixel contributions histogram on the device
-    CUDA_CALL(cudaMemset(d_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int)));
+    CUDA_CALL(cudaMemset(d_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int)))
 
     // Calculate the grid and block dimensions
 	dim3 threadsPerBlock(32, 1, 1);
     dim3 blocksPerGrid((int)ceil((float)cuda_particles_count/threadsPerBlock.x));
 
-    // Launch the CUDA kernel
-    cuda_stage1_outer_parallel_inner_two_collapsed <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
-	// cuda_stage1_outer_parallel << <blocksPerGrid, threadsPerBlock >> > (d_particles, d_pixel_contribs);
+    // Launch the CUDA kernel (using best performing implementation)
+    cuda_stage1_outer_parallel_inner_unrolled <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
 
-    CUDA_CALL(cudaGetLastError());
-    CUDA_CALL(cudaDeviceSynchronize());
+    // Another kernel, which performs worse. See the comment for cuda_stage1_outer_parallel.
+	// cuda_stage1_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
 
-    CUDA_CALL(cudaMemcpy(cuda_pixel_contribs, d_pixel_contribs, cuda_output_image_width * cuda_output_image_height * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+    CUDA_CALL(cudaGetLastError())
+    CUDA_CALL(cudaDeviceSynchronize())
 
 #ifdef VALIDATION
     validate_pixel_contribs(cuda_particles, cuda_particles_count, cuda_pixel_contribs, cuda_output_image.width, cuda_output_image.height);
 #endif
+}
+
+__global__ void cuda_stage2_store_colours_second_parallel_attempt(
+    Particle* particles, unsigned int* pixel_index, unsigned char* pixel_contrib_colours, float* pixel_contrib_depth, unsigned int* pixel_contribs,
+    int x_min, int y_min, int x_max, int y_max, int particle_index)
+{
+    // Calculate the pixel offset in the 2D grid
+    unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Ensure the thread operates within the image bounds and the first loop bounds
+    if (x >= x_min && x <= x_max && x < D_OUTPUT_IMAGE_WIDTH)
+    {
+        for (int y = y_min; y <= y_max; ++y)
+        {
+            const float x_ab = (float)x + 0.5f - particles[blockIdx.y].location[0];
+            const float y_ab = (float)y + 0.5f - particles[blockIdx.y].location[1];
+            const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
+
+            if (pixel_distance <= particles[blockIdx.y].radius)
+            {
+                const unsigned int pixel_offset = y * D_OUTPUT_IMAGE_WIDTH + x;
+                const unsigned int storage_offset = pixel_index[pixel_offset] + (pixel_contribs[pixel_offset]++);
+
+                for (int c = 0; c < 4; ++c)
+                {
+                    pixel_contrib_colours[4 * storage_offset + c] = particles[blockIdx.y].color[c];
+                }
+                pixel_contrib_depth[storage_offset] = particles[blockIdx.y].location[2];
+            }
+        }
+    }
 }
 
 void cuda_stage2_second_parallel_attempt() {
@@ -432,7 +460,7 @@ void cuda_stage2_second_parallel_attempt() {
     // Pair sort the colours contributing to each pixel based on ascending depth
     for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
         // Pair sort the colours which contribute to a single pigment
-        cuda_sort_pairs(
+        regular_sort_pairs(
             cuda_pixel_contrib_depth,
             cuda_pixel_contrib_colours,
             cuda_pixel_index[i],
@@ -460,6 +488,7 @@ void cuda_stage2()
 }
 
 void cuda_stage3(){
+    // Memset output image data to 255 (white) 
     memset(cuda_output_image.data, 255, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char));
     CUDA_CALL(cudaMemcpy(d_output_image_data, cuda_output_image.data, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char), cudaMemcpyHostToDevice));
 
@@ -467,11 +496,14 @@ void cuda_stage3(){
     dim3 threadsPerBlock(32, 1, 1);
     dim3 blocksPerGrid((cuda_output_image.width * cuda_output_image.height + threadsPerBlock.x - 1) / threadsPerBlock.x);
 
-    // cuda_stage3_outer_parallel << <blocksPerGrid, threadsPerBlock >> > (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
+    // Launch the CUDA kernel (using best performing implementation)
     cuda_stage3_order_rearranged_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
 
-    CUDA_CALL(cudaGetLastError());
-    CUDA_CALL(cudaDeviceSynchronize());
+	// Another kernel, which performs worse. See the comment for cuda_stage3_outer_parallel.
+	// cuda_stage3_outer_parallel << <blocksPerGrid, threadsPerBlock >> > (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
+
+    CUDA_CALL(cudaGetLastError())
+    CUDA_CALL(cudaDeviceSynchronize())
 
 #ifdef VALIDATION
     CUDA_CALL(cudaMemcpy(cuda_pixel_contrib_colours, d_pixel_contrib_colours, cuda_pixel_contrib_count * 4 * sizeof(unsigned char), cudaMemcpyDeviceToHost));
@@ -482,6 +514,8 @@ void cuda_stage3(){
 }
 
 void cuda_end(CImage *output_image) {
+    // TODO: Check if matches cuda_begin BEFORE DOING EXPERIMENTS
+
     output_image->width = cuda_output_image.width;
     output_image->height = cuda_output_image.height;
     output_image->channels = cuda_output_image.channels;
