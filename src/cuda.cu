@@ -6,6 +6,7 @@
 #include <cmath>
 #include <device_launch_parameters.h>
 #include <windows.h>
+#include <windows.h>
 
 ///
 /// Host Variables
@@ -139,82 +140,98 @@ __global__ void cuda_stage1_outer_parallel_inner_two_collapsed(Particle* particl
         }
     }
 }
-__global__ void cuda_stage2_store_colours_second_third_parallel_collapsed(int x_min, int y_min, int x_max, int y_max, int particle_index)
+__global__ void cuda_stage2_store_colours_second_parallel_attempt(
+    Particle* particles, unsigned int* pixel_index, unsigned char* pixel_contrib_colours, float* pixel_contrib_depth, unsigned int* pixel_contribs,
+    int x_min, int y_min, int x_max, int y_max, int particle_index)
 {
     // Calculate the pixel offset in the 2D grid
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    // Ensure the thread operates within the image bounds and the first loop bounds
+    if (x >= x_min && x <= x_max && x < D_OUTPUT_IMAGE_WIDTH)
+    {
+        for (int y = y_min; y <= y_max; ++y)
+        {
+            const float x_ab = (float)x + 0.5f - particles[blockIdx.y].location[0];
+            const float y_ab = (float)y + 0.5f - particles[blockIdx.y].location[1];
+            const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
 
-    // Ensure the thread operates within the image bounds
-    if (x >= D_OUTPUT_IMAGE_WIDTH || y >= D_OUTPUT_IMAGE_HEIGHT)
-        return;
+            if (pixel_distance <= particles[blockIdx.y].radius)
+            {
+                const unsigned int pixel_offset = y * D_OUTPUT_IMAGE_WIDTH + x;
+                const unsigned int storage_offset = pixel_index[pixel_offset] + (pixel_contribs[pixel_offset]++);
 
-    // Check if the pixel falls within the bounding box and contribute to the particle
-    if (x >= x_min && x <= x_max && y >= y_min && y <= y_max) {
-        const float x_ab = (float)x + 0.5f - d_particles[particle_index].location[0];
-        const float y_ab = (float)y + 0.5f - d_particles[particle_index].location[1];
-        const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-
-        if (pixel_distance <= d_particles[particle_index].radius) {
-            unsigned int pixel_offset = y * D_OUTPUT_IMAGE_WIDTH + x;
-            const unsigned int storage_offset = atomicAdd(&d_pixel_index[pixel_offset], 1); //d_pixel_index[pixel_offset] + (d_pixel_contribs[pixel_offset]++);
-
-            for (int c = 0; c < 4; ++c) {
-                d_pixel_contrib_colours[4 * storage_offset + c] = d_particles[particle_index].color[c];
-            }
-            d_pixel_contrib_depth[storage_offset] = d_particles[particle_index].location[2];
-        }
-    }
-}
-
-void fake_stage1() {
-    // Reset the pixel contributions histogram
-    memset(cuda_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int));
-    // Update each particle & calculate how many particles contribute to each image
-    for (unsigned int i = 0; i < cuda_particles_count; ++i) {
-        // Compute bounding box [inclusive-inclusive]
-        int x_min = (int)roundf(cuda_particles[i].location[0] - cuda_particles[i].radius);
-        int y_min = (int)roundf(cuda_particles[i].location[1] - cuda_particles[i].radius);
-        int x_max = (int)roundf(cuda_particles[i].location[0] + cuda_particles[i].radius);
-        int y_max = (int)roundf(cuda_particles[i].location[1] + cuda_particles[i].radius);
-        // Clamp bounding box to image bounds
-        x_min = x_min < 0 ? 0 : x_min;
-        y_min = y_min < 0 ? 0 : y_min;
-        x_max = x_max >= cuda_output_image.width ? cuda_output_image.width - 1 : x_max;
-        y_max = y_max >= cuda_output_image.height ? cuda_output_image.height - 1 : y_max;
-        // For each pixel in the bounding box, check that it falls within the radius
-        for (int x = x_min; x <= x_max; ++x) {
-            for (int y = y_min; y <= y_max; ++y) {
-                const float x_ab = (float)x + 0.5f - cuda_particles[i].location[0];
-                const float y_ab = (float)y + 0.5f - cuda_particles[i].location[1];
-                const float pixel_distance = sqrtf(x_ab * x_ab + y_ab * y_ab);
-                if (pixel_distance <= cuda_particles[i].radius) {
-                    const unsigned int pixel_offset = y * cuda_output_image.width + x;
-                    ++cuda_pixel_contribs[pixel_offset];
+                for (int c = 0; c < 4; ++c)
+                {
+                    pixel_contrib_colours[4 * storage_offset + c] = particles[blockIdx.y].color[c];
                 }
+                pixel_contrib_depth[storage_offset] = particles[blockIdx.y].location[2];
             }
         }
     }
 }
-void fake_stage2() {
+__global__ void cuda_stage3_order_rearranged_outer_parallel(unsigned int* pixel_index, unsigned char* pixel_contrib_colours, unsigned char* output_image_data)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < D_OUTPUT_IMAGE_WIDTH * D_OUTPUT_IMAGE_HEIGHT) {
+        for (unsigned int j = pixel_index[index]; j < pixel_index[index + 1]; ++j) {
+            // Get the color and opacity values
+            const unsigned char* color = &pixel_contrib_colours[j * 4];
+            const float opacity = (float)color[3] / (float)255;
+
+            // Compute the blended color channels
+            const float src_r = (float)color[0] * opacity;
+            const float src_g = (float)color[1] * opacity;
+            const float src_b = (float)color[2] * opacity;
+            const float dest_r = output_image_data[(index * 3) + 0];
+            const float dest_g = output_image_data[(index * 3) + 1];
+            const float dest_b = output_image_data[(index * 3) + 2];
+            const float blended_r = src_r + dest_r * (1 - opacity);
+            const float blended_g = src_g + dest_g * (1 - opacity);
+            const float blended_b = src_b + dest_b * (1 - opacity);
+
+            // Store the blended color channels in the output image
+            output_image_data[(index * 3) + 0] = (unsigned char)blended_r;
+            output_image_data[(index * 3) + 1] = (unsigned char)blended_g;
+            output_image_data[(index * 3) + 2] = (unsigned char)blended_b;
+        }
+    }
+}
+
+void serial_stage2() {
     // Exclusive prefix sum across the histogram to create an index
     cuda_pixel_index[0] = 0;
     for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
         cuda_pixel_index[i + 1] = cuda_pixel_index[i] + cuda_pixel_contribs[i];
     }
+
     // Recover the total from the index
     const unsigned int TOTAL_CONTRIBS = cuda_pixel_index[cuda_output_image.width * cuda_output_image.height];
     if (TOTAL_CONTRIBS > cuda_pixel_contrib_count) {
         // (Re)Allocate colour storage
-        if (cuda_pixel_contrib_colours) free(cuda_pixel_contrib_colours);
-        if (cuda_pixel_contrib_depth) free(cuda_pixel_contrib_depth);
+        if (cuda_pixel_contrib_colours)
+        {
+            free(cuda_pixel_contrib_colours);
+            CUDA_CALL(cudaFree(d_pixel_contrib_colours));
+        }
+        if (cuda_pixel_contrib_depth)
+        {
+            free(cuda_pixel_contrib_depth);
+            CUDA_CALL(cudaFree(d_pixel_contrib_depth));
+        }
+
         cuda_pixel_contrib_colours = (unsigned char*)malloc(TOTAL_CONTRIBS * 4 * sizeof(unsigned char));
         cuda_pixel_contrib_depth = (float*)malloc(TOTAL_CONTRIBS * sizeof(float));
         cuda_pixel_contrib_count = TOTAL_CONTRIBS;
+
+        CUDA_CALL(cudaMemcpy(d_pixel_index, cuda_pixel_index, ((cuda_output_image_width * cuda_output_image_height + 1) * sizeof(unsigned int)), cudaMemcpyHostToDevice))
+    	CUDA_CALL(cudaMalloc(&d_pixel_contrib_colours, TOTAL_CONTRIBS * 4 * sizeof(unsigned char)))
+    	CUDA_CALL(cudaMalloc(&d_pixel_contrib_depth, TOTAL_CONTRIBS * sizeof(float)))
     }
 
-    // Reset the pixel contributions histogram
+    // Reset the pixel contributions
     memset(cuda_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int));
+    CUDA_CALL(cudaMemset(d_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int)));
 
     // Store colours according to index
     // For each particle, store a copy of the colour/depth in cuda_pixel_contribs for each contributed pixel
@@ -257,6 +274,9 @@ void fake_stage2() {
             cuda_pixel_index[i + 1] - 1
         );
     }
+
+    CUDA_CALL(cudaMemcpy(d_pixel_index, cuda_pixel_index, (cuda_output_image_width * cuda_output_image_width + 1) * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CUDA_CALL(cudaMemcpy(d_pixel_contrib_colours, cuda_pixel_contrib_colours, cuda_pixel_contrib_count * 4 * sizeof(unsigned char), cudaMemcpyHostToDevice));
 }
 void fake_stage3() {
     // Memset output image data to 255 (white)
@@ -277,93 +297,6 @@ void fake_stage3() {
     }
 }
 
-
-void cuda_stage2_attempt() {
-    // Exclusive prefix sum across the histogram to create an index
-    cuda_pixel_index[0] = 0;
-    for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
-        cuda_pixel_index[i + 1] = cuda_pixel_index[i] + cuda_pixel_contribs[i];
-    }
-    // Transfering variables changed on the host to device
-    CUDA_CALL(cudaMemcpy(d_pixel_index, cuda_pixel_index, ((cuda_output_image_width * cuda_output_image_height + 1) * sizeof(unsigned int)), cudaMemcpyHostToDevice))
-
-        // Recover the total from the index
-        const unsigned int TOTAL_CONTRIBS = cuda_pixel_index[cuda_output_image.width * cuda_output_image.height];
-    if (TOTAL_CONTRIBS > cuda_pixel_contrib_count) {
-        // (Re)Allocate colour storage
-        if (cuda_pixel_contrib_colours)
-        {
-            free(cuda_pixel_contrib_colours);
-            CUDA_CALL(cudaFree(d_pixel_contrib_colours));
-        }
-        if (cuda_pixel_contrib_depth)
-        {
-            free(cuda_pixel_contrib_depth);
-            CUDA_CALL(cudaFree(d_pixel_contrib_depth));
-        }
-
-        cuda_pixel_contrib_colours = (unsigned char*)malloc(TOTAL_CONTRIBS * 4 * sizeof(unsigned char));
-        cuda_pixel_contrib_depth = (float*)malloc(TOTAL_CONTRIBS * sizeof(float));
-        cuda_pixel_contrib_count = TOTAL_CONTRIBS;
-
-        CUDA_CALL(cudaMalloc(&d_pixel_contrib_colours, TOTAL_CONTRIBS * 4 * sizeof(unsigned char)))
-            CUDA_CALL(cudaMalloc(&d_pixel_contrib_depth, TOTAL_CONTRIBS * sizeof(float)))
-    }
-
-    // Reset the pixel contributions histogram on the device
-    CUDA_CALL(cudaMemset(d_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int)));
-
-    // Calculate the grid and block dimensions
-    dim3 threadsPerBlock(32, 1, 1);
-    dim3 blocksPerGrid((int)ceil((float)cuda_particles_count / threadsPerBlock.x));
-
-    for (unsigned int i = 0; i < cuda_particles_count; ++i) {
-        // Compute bounding box [inclusive-inclusive]
-        int x_min = (int)roundf(cuda_particles[i].location[0] - cuda_particles[i].radius);
-        int y_min = (int)roundf(cuda_particles[i].location[1] - cuda_particles[i].radius);
-        int x_max = (int)roundf(cuda_particles[i].location[0] + cuda_particles[i].radius);
-        int y_max = (int)roundf(cuda_particles[i].location[1] + cuda_particles[i].radius);
-
-        // Clamp bounding box to image bounds
-        x_min = max(x_min, 0);
-        y_min = max(y_min, 0);
-        x_max = min(x_max, (int)(cuda_output_image.width - 1));
-        y_max = min(y_max, (int)(cuda_output_image.height - 1));
-
-        cuda_stage2_store_colours_second_third_parallel_collapsed << <blocksPerGrid, threadsPerBlock >> > (x_min, y_min, x_max, y_max, i);
-
-        CUDA_CALL(cudaGetLastError());
-        CUDA_CALL(cudaDeviceSynchronize());
-    }
-
-    CUDA_CALL(cudaMemcpy(cuda_pixel_contribs, d_pixel_contribs, cuda_output_image_width * cuda_output_image_height * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-    CUDA_CALL(cudaMemcpy(cuda_pixel_contrib_colours, d_pixel_contrib_colours, TOTAL_CONTRIBS * 4 * sizeof(unsigned char), cudaMemcpyDeviceToHost));
-    CUDA_CALL(cudaMemcpy(cuda_pixel_contrib_depth, d_pixel_contrib_depth, TOTAL_CONTRIBS * sizeof(float), cudaMemcpyDeviceToHost));
-
-    cuda_pixel_contrib_colours = d_pixel_contrib_colours;
-    cuda_pixel_contrib_depth = d_pixel_contrib_depth;
-
-    // Pair sort the colours contributing to each pixel based on ascending depth
-    for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
-        // Pair sort the colours which contribute to a single pigment
-        cuda_sort_pairs(
-            cuda_pixel_contrib_depth,
-            cuda_pixel_contrib_colours,
-            cuda_pixel_index[i],
-            cuda_pixel_index[i + 1] - 1
-        );
-    }
-
-#ifdef VALIDATION
-    // Note: Only validate_equalised_histogram() MUST be uncommented, the others are optional
-    // You will need to copy the data back to host before passing to these functions
-    // (Ensure that data copy is carried out within the ifdef VALIDATION so that it doesn't affect your benchmark results!)
-
-    validate_pixel_index(cuda_pixel_contribs, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height);
-    validate_sorted_pairs(cuda_particles, cuda_particles_count, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height, cuda_pixel_contrib_colours, cuda_pixel_contrib_depth);
-#endif    
-}
-
 void cuda_begin(const Particle* init_particles, const unsigned int init_particles_count,
     const unsigned int out_image_width, const unsigned int out_image_height) {
 
@@ -373,6 +306,9 @@ void cuda_begin(const Particle* init_particles, const unsigned int init_particle
     
     cuda_pixel_contribs = (unsigned int*)malloc(out_image_width * out_image_height * sizeof(unsigned int));
     cuda_pixel_index = (unsigned int*)malloc((out_image_width * out_image_height + 1) * sizeof(unsigned int));
+
+    cuda_pixel_contrib_colours = (unsigned char*)malloc(cuda_pixel_contrib_count * 4 * sizeof(unsigned char));
+    cuda_pixel_contrib_depth = (float*)malloc(cuda_pixel_contrib_count * sizeof(float));
 
     cuda_pixel_contrib_count = 0;
     cuda_pixel_contrib_colours = 0;
@@ -391,6 +327,7 @@ void cuda_begin(const Particle* init_particles, const unsigned int init_particle
 
 	CUDA_CALL(cudaMalloc(&d_pixel_contribs, ((int)out_image_width) * ((int)out_image_height) * sizeof(unsigned int)));
     CUDA_CALL(cudaMalloc(&d_pixel_index, (((int)out_image_width) * ((int)out_image_height) + 1) * sizeof(unsigned int)));
+    CUDA_CALL(cudaMalloc((void**)&d_pixel_contrib_colours, cuda_pixel_contrib_count * 4 * sizeof(unsigned char)));
     d_pixel_contrib_colours = 0;
     d_pixel_contrib_depth = 0;
 
@@ -424,32 +361,122 @@ void cuda_stage1() {
 #endif
 }
 
+void cuda_stage2_second_parallel_attempt() {
+    // Exclusive prefix sum across the histogram to create an index
+    cuda_pixel_index[0] = 0;
+    for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
+        cuda_pixel_index[i + 1] = cuda_pixel_index[i] + cuda_pixel_contribs[i];
+    }
 
+	// Recover the total from the index
+	const unsigned int TOTAL_CONTRIBS = cuda_pixel_index[cuda_output_image.width * cuda_output_image.height];
+    if (TOTAL_CONTRIBS > cuda_pixel_contrib_count) {
+        // (Re)Allocate colour storage
+        if (cuda_pixel_contrib_colours)
+        {
+            free(cuda_pixel_contrib_colours);
+            CUDA_CALL(cudaFree(d_pixel_contrib_colours));
+        }
+        if (cuda_pixel_contrib_depth)
+        {
+            free(cuda_pixel_contrib_depth);
+            CUDA_CALL(cudaFree(d_pixel_contrib_depth));
+        }
 
-void cuda_stage2()
-{
-    fake_stage2();
+        cuda_pixel_contrib_colours = (unsigned char*)malloc(TOTAL_CONTRIBS * 4 * sizeof(unsigned char));
+        cuda_pixel_contrib_depth = (float*)malloc(TOTAL_CONTRIBS * sizeof(float));
+        cuda_pixel_contrib_count = TOTAL_CONTRIBS;
+    	
+        CUDA_CALL(cudaMemcpy(d_pixel_index, cuda_pixel_index, ((cuda_output_image_width * cuda_output_image_height + 1) * sizeof(unsigned int)), cudaMemcpyHostToDevice))
+        CUDA_CALL(cudaMalloc(&d_pixel_contrib_colours, TOTAL_CONTRIBS * 4 * sizeof(unsigned char)))
+    	CUDA_CALL(cudaMalloc(&d_pixel_contrib_depth, TOTAL_CONTRIBS * sizeof(float)))
+    }
+
+    // Reset the pixel contributions
+    memset(cuda_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int));
+    CUDA_CALL(cudaMemset(d_pixel_contribs, 0, cuda_output_image.width * cuda_output_image.height * sizeof(unsigned int)));
+
+    // Calculate the grid and block dimensions
+    dim3 threadsPerBlock(32, 1, 1);
+    dim3 blocksPerGrid((int)ceil((float)cuda_particles_count / threadsPerBlock.x));
+
+    for (unsigned int i = 0; i < cuda_particles_count; ++i) {
+        // Compute bounding box [inclusive-inclusive]
+        int x_min = (int)roundf(cuda_particles[i].location[0] - cuda_particles[i].radius);
+        int y_min = (int)roundf(cuda_particles[i].location[1] - cuda_particles[i].radius);
+        int x_max = (int)roundf(cuda_particles[i].location[0] + cuda_particles[i].radius);
+        int y_max = (int)roundf(cuda_particles[i].location[1] + cuda_particles[i].radius);
+
+        // Clamp bounding box to image bounds
+        x_min = max(x_min, 0);
+        y_min = max(y_min, 0);
+        x_max = min(x_max, (int)(cuda_output_image.width - 1));
+        y_max = min(y_max, (int)(cuda_output_image.height - 1));
+
+        cuda_stage2_store_colours_second_parallel_attempt << <blocksPerGrid, threadsPerBlock >> > (
+            d_particles, d_pixel_index, d_pixel_contrib_colours, d_pixel_contrib_depth, d_pixel_contribs,
+            x_min, y_min, x_max, y_max, i);
+
+        CUDA_CALL(cudaGetLastError());
+        CUDA_CALL(cudaDeviceSynchronize());
+    }
+
+    CUDA_CALL(cudaMemcpy(cuda_pixel_contribs, d_pixel_contribs, cuda_output_image_width * cuda_output_image_height * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+    CUDA_CALL(cudaMemcpy(cuda_pixel_contrib_colours, d_pixel_contrib_colours, TOTAL_CONTRIBS * 4 * sizeof(unsigned char), cudaMemcpyDeviceToHost))
+    CUDA_CALL(cudaMemcpy(cuda_pixel_contrib_depth, d_pixel_contrib_depth, TOTAL_CONTRIBS * sizeof(float), cudaMemcpyDeviceToHost))
+    CUDA_CALL(cudaMemcpy(cuda_pixel_index, d_pixel_index, ((cuda_output_image_width * cuda_output_image_height + 1) * sizeof(unsigned int)), cudaMemcpyDeviceToHost))
+
+    cuda_pixel_contrib_colours = d_pixel_contrib_colours;
+    cuda_pixel_contrib_depth = d_pixel_contrib_depth;
+
+    // Pair sort the colours contributing to each pixel based on ascending depth
+    for (int i = 0; i < cuda_output_image.width * cuda_output_image.height; ++i) {
+        // Pair sort the colours which contribute to a single pigment
+        cuda_sort_pairs(
+            cuda_pixel_contrib_depth,
+            cuda_pixel_contrib_colours,
+            cuda_pixel_index[i],
+            cuda_pixel_index[i + 1] - 1
+        );
+    }
+
 #ifdef VALIDATION
     // Note: Only validate_equalised_histogram() MUST be uncommented, the others are optional
     // You will need to copy the data back to host before passing to these functions
     // (Ensure that data copy is carried out within the ifdef VALIDATION so that it doesn't affect your benchmark results!)
 
-    validate_pixel_index(cuda_pixel_contribs, cuda_pixel_index, cuda_output_image.width, cuda_output_image.height);
-    validate_sorted_pairs(cuda_particles, cuda_particles_count, cuda_pixel_index, cuda_output_image.width, cuda_output_image.height, cuda_pixel_contrib_colours, cuda_pixel_contrib_depth);
-#endif 
+    validate_pixel_index(cuda_pixel_contribs, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height);
+    validate_sorted_pairs(cuda_particles, cuda_particles_count, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height, cuda_pixel_contrib_colours, cuda_pixel_contrib_depth);
+#endif    
 }
 
-void cuda_stage3() {
-    // Optionally during development call the skip function with the correct inputs to skip this stage
-    // You will need to copy the data back to host before passing to these functions
-    // skip_blend(cuda_pixel_index, cuda_pixel_contrib_colours, &cuda_output_image);
-    
-    fake_stage3();
-    // validate_blend(cuda_pixel_index, cuda_pixel_contrib_colours, &cuda_output_image);
+void cuda_stage2()
+{
+    serial_stage2();
+#ifdef VALIDATION
+    validate_pixel_index(cuda_pixel_contribs, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height);
+    validate_sorted_pairs(cuda_particles, cuda_particles_count, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height, cuda_pixel_contrib_colours, cuda_pixel_contrib_depth);
+#endif    
+}
+
+void cuda_stage3(){
+    memset(cuda_output_image.data, 255, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char));
+    CUDA_CALL(cudaMemcpy(d_output_image_data, cuda_output_image.data, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char), cudaMemcpyHostToDevice));
+
+    // Calculate the grid and block dimensions
+    dim3 threadsPerBlock(32, 1, 1);
+    dim3 blocksPerGrid((cuda_output_image.width * cuda_output_image.height + threadsPerBlock.x - 1) / threadsPerBlock.x);
+
+    // cuda_stage3_outer_parallel << <blocksPerGrid, threadsPerBlock >> > (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
+    cuda_stage3_order_rearranged_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
+
+    CUDA_CALL(cudaGetLastError());
+    CUDA_CALL(cudaDeviceSynchronize());
 
 #ifdef VALIDATION
-    // You will need to copy the data back to host before passing to these functions
-    // (Ensure that data copy is carried out within the ifdef VALIDATION so that it doesn't affect your benchmark results!)
+    CUDA_CALL(cudaMemcpy(cuda_pixel_contrib_colours, d_pixel_contrib_colours, cuda_pixel_contrib_count * 4 * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+    CUDA_CALL(cudaMemcpy(cuda_pixel_index, d_pixel_index, ((cuda_output_image_width * cuda_output_image_height + 1) * sizeof(unsigned int)), cudaMemcpyDeviceToHost))
+	CUDA_CALL(cudaMemcpy(cuda_output_image.data, d_output_image_data, cuda_output_image_width * cuda_output_image_height * 3 * sizeof(unsigned char), cudaMemcpyDeviceToHost))
     validate_blend(cuda_pixel_index, cuda_pixel_contrib_colours, &cuda_output_image);
 #endif    
 }
@@ -458,8 +485,8 @@ void cuda_end(CImage *output_image) {
     output_image->width = cuda_output_image.width;
     output_image->height = cuda_output_image.height;
     output_image->channels = cuda_output_image.channels;
-    // CUDA_CALL(cudaMemcpy(output_image->data, d_output_image_data, cuda_output_image_width * cuda_output_image_height * 3 * sizeof(unsigned char), cudaMemcpyDeviceToHost));
-    memcpy(output_image->data, cuda_output_image.data, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char));
+    CUDA_CALL(cudaMemcpy(output_image->data, d_output_image_data, cuda_output_image_width * cuda_output_image_height * 3 * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+    // memcpy(output_image->data, cuda_output_image.data, cuda_output_image.width * cuda_output_image.height * cuda_output_image.channels * sizeof(unsigned char));
 
     CUDA_CALL(cudaFree(d_particles));
     CUDA_CALL(cudaFree(d_pixel_contribs));
