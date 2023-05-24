@@ -472,10 +472,10 @@ void cuda_stage1()
     dim3 blocksPerGrid((int)ceil((float)cuda_particles_count/threadsPerBlock.x));
 
     // Launch the CUDA kernel (using best performing implementation)
-    cuda_stage1_outer_parallel_inner_unrolled <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
+    // cuda_stage1_outer_parallel_inner_unrolled <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
 
     // Another kernel, which performs worse. See the comment for cuda_stage1_outer_parallel.
-	// cuda_stage1_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
+	cuda_stage1_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_particles, d_pixel_contribs);
 
     CUDA_CALL(cudaGetLastError())
     CUDA_CALL(cudaDeviceSynchronize())
@@ -580,6 +580,8 @@ void cuda_stage2()
     */
 
     serial_stage2();
+
+
 #ifdef VALIDATION
     validate_pixel_index(cuda_pixel_contribs, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height);
     validate_sorted_pairs(cuda_particles, cuda_particles_count, cuda_pixel_index, cuda_output_image_width, cuda_output_image_height, cuda_pixel_contrib_colours, cuda_pixel_contrib_depth);
@@ -596,7 +598,7 @@ void cuda_stage3(){
     dim3 blocksPerGrid((cuda_output_image.width * cuda_output_image.height + threadsPerBlock.x - 1) / threadsPerBlock.x);
 
     // Launch the CUDA kernel (using best performing implementation)
-    cuda_stage3_order_rearranged_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
+	cuda_stage3_order_rearranged_outer_parallel <<<blocksPerGrid, threadsPerBlock>>> (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
 
 	// Another kernel, which performs worse. See the comment for cuda_stage3_outer_parallel.
 	// cuda_stage3_outer_parallel << <blocksPerGrid, threadsPerBlock >> > (d_pixel_index, d_pixel_contrib_colours, d_output_image_data);
