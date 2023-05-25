@@ -233,7 +233,6 @@ void openmp_stage_1_outer_parallel_inner_two_collapsed()
 ///
 /// OpenMP Stage 2 Implementation (1/3).
 /// Last loop, which is pair sorting the pairs, is parallelized.
-/// Provides the best performance out of three implemented approaches. Used in openmp_stage2.
 ///
 void openmp_stage2_last_parallel()
 {
@@ -308,6 +307,7 @@ void openmp_stage2_last_parallel()
 /// Last loop, which is pair sorting the pairs, is parallelized.
 /// Store colours according to index, which is comprised of three loops,
 /// second loop is parallelized.
+/// Provides the best performance out of three implemented approaches. Used in openmp_stage2.
 ///
 void openmp_stage2_last_parallel_store_colours_second_parallel()
 {
@@ -583,14 +583,24 @@ void openmp_begin(const Particle* init_particles, const unsigned int init_partic
 }
 
 void openmp_stage1() {
+    // Best performing modification
 	openmp_stage1_outer_parallel();
+
+    // Other modifications. Check function comments for more information
+    // openmp_stage_1_outer_parallel_first_two_collapsed();
+    // openmp_stage_1_outer_parallel_inner_two_collapsed();
 #ifdef VALIDATION
     validate_pixel_contribs(openmp_particles, openmp_particles_count, openmp_pixel_contribs, openmp_output_image.width, openmp_output_image.height);
 #endif
 }
 
 void openmp_stage2() {
-    openmp_stage2_last_parallel();
+    // Best performing modification and the most consistent when parameter sizes increase
+    openmp_stage2_last_parallel_store_colours_second_parallel();
+
+    // Other modifications. Check function comments for more information
+    // openmp_stage2_last_parallel();
+    // openmp_stage2_last_parallel_store_colours_second_third_collapsed();
 #ifdef VALIDATION
     validate_pixel_index(openmp_pixel_contribs, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height);
     validate_sorted_pairs(openmp_particles, openmp_particles_count, openmp_pixel_index, openmp_output_image.width, openmp_output_image.height, openmp_pixel_contrib_colours, openmp_pixel_contrib_depth);
@@ -598,7 +608,12 @@ void openmp_stage2() {
 }
 
 void openmp_stage3() {
+    // Best performing modification
     openmp_stage3_order_rearranged_outer_parallel();
+
+    // Other modifications. Check function comments for more information
+    // openmp_stage3_order_rearranged_both_parallel();
+    // openmp_stage3_outer_parallel();
 #ifdef VALIDATION
     validate_blend(openmp_pixel_index, openmp_pixel_contrib_colours, &openmp_output_image);
 #endif    
