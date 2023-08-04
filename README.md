@@ -17,6 +17,6 @@ The main objective of the assignment was to improve program performance via the 
 
 ## Development
 
-Each stage was implemented using `OpenMP` and `CUDA` and can be examined in [openmp.c](src\openmp.c) and [cuda.cu](src\cuda.cu) respectively. The main program ([main.cu](src\main.cu)) runs each stage in the provided sequence, whilst measuring performance.
+Each stage was implemented using `OpenMP` and `CUDA` and can be examined in [openmp.c](src/openmp.c) and [cuda.cu](src/cuda.cu) respectively. The main program ([main.cu](src/main.cu)) runs each stage in the provided sequence, whilst measuring performance.
 
 Different program arguments are configured to benchmark the performance via multiple runs to minimise the margin of error.
